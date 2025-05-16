@@ -1,1 +1,0 @@
-#execução de binários
