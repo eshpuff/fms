@@ -1,154 +1,186 @@
-# funciona com notepad e paint, mas nao com a calculadora. tem q ver pq
-
 import subprocess
 import threading
 import time
 import psutil
 import os
-import shutil
 
 def askUserData():
-    binaryName = input("Caminho do programa a ser executado (ex: C:\\\\Windows\\\\System32\\\\notepad.exe ou apenas notepad.exe): ") 
+    binaryPath = input("Caminho do programa (ex: C:\\Windows\\System32\\notepad.exe): ").strip()
+
+    if binaryPath.lower() == "sair":
+        return None
+
     try:
-        quotaCpu = float(input("Quota de tempo de CPU (s): "))
-        timeout = float(input("Tempo limite total de execução (s): ")) 
-        memoryLimit = float(input("Limite máximo de memória (MB): "))
+        quotaCpu = float(input("Quota de CPU (em segundos): "))
+        timeout = float(input("Tempo limite total de execução (em segundos): "))
+        memoryLimit = float(input("Limite máximo de memória (em MB): ")) * 1024 * 1024
     except ValueError:
-        print("Entrada inválida.")
+        print("Entrada inválida")
         return None
 
     return {
-        "binary": binaryName.strip(),
+        "binaryPath": binaryPath,
+        "binaryName": os.path.basename(binaryPath),
         "quotaCpu": quotaCpu,
         "timeout": timeout,
-        "limiteMemoria": memoryLimit * 1024 * 1024  # MB → bytes
+        "limiteMemoria": memoryLimit
     }
-    
-    
-#chat!!!
-def diferenca_processos(proc_antigo, proc_novo):
-    return [p for p in proc_novo if p.pid not in [x.pid for x in proc_antigo]]
 
-def get_total_memory_usage(ps_proc):
-    try:
-        total = ps_proc.memory_info().rss
-        for child in ps_proc.children(recursive=True):
-            total += child.memory_info().rss
-        return total
-    except psutil.NoSuchProcess:
-        return 0
-
-def monitorCPU(data, psProcess):
-    while psProcess.is_running():
+def find_process_by_name(name):
+    # encontra todos os processos ativos pelo nome do binary
+    matching = []
+    for proc in psutil.process_iter(['pid', 'name']):
         try:
-            cpu_times = psProcess.cpu_times()
-            cpu_total = cpu_times.user + cpu_times.system
-            percent_used = (cpu_total / data['quotaCpu']) * 100
+            if proc.info['name'] and proc.info['name'].lower() == name.lower():
+                matching.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return matching
 
-            status = f"[CPU] Uso: {cpu_total:.2f}s / {data['quotaCpu']}s ({percent_used:.1f}%)"
-            if percent_used >= 90:
-                status += " [ALERTA]"
-            print(status)
+
+def select_active_process(binaryName):
+    # seleciona o processo mais recente com o nome informado
+    processes = find_process_by_name(binaryName)
+    if not processes:
+        return None
+
+    # ordena por tempo de criação e pega o processo mais recente
+    process = sorted(processes, key=lambda p: p.create_time())[-1]
+    return process
+
+
+def monitor_process(data, initial_pid):
+    try:
+        process = psutil.Process(initial_pid)
+    except psutil.NoSuchProcess:
+        return None
+
+    startTime = time.time()
+    max_memory = 0
+    last_user_cpu = 0
+    last_system_cpu = 0
+    reason = "finalizado normalmente"
+
+    while True:
+        elapsedTime = time.time() - startTime
+
+        if process is None or not process.is_running():
+            process = select_active_process(data['binaryName'])
+            if process is None:
+                print("[INFO] Nenhum processo ativo encontrado. Encerrando monitoramento.")
+                break
+            else:
+                print(f"[INFO] Mudando para o novo processo PID={process.pid}")
+
+        try:
+            cpu_times = process.cpu_times()
+            cpu_user = cpu_times.user
+            cpu_system = cpu_times.system
+            cpu_total = cpu_user + cpu_system
+
+            memory_usage = process.memory_info().rss
+            if memory_usage > max_memory:
+                max_memory = memory_usage
+
+            print(f'[MONITOR] CPU: {cpu_total:.2f} s (Usuário: {cpu_user:.2f}s | Sistema: {cpu_system:.2f}s), '
+                  f'MEM: {memory_usage / (1024 * 1024):.2f} MB | Tempo: {elapsedTime:.2f}s')
 
             if cpu_total >= data['quotaCpu']:
-                print("[CPU] Quota esgotada. Encerrando processo.")
-                psProcess.kill()
+                print("[ALERTA] Quota de CPU excedida. Encerrando processo.")
+                process.kill()
+                reason = "quota_excedida"
                 break
-
-            time.sleep(1)
-        except psutil.NoSuchProcess:
-            break
-
-def monitorMemory(data, psProcess):
-    while psProcess.is_running():
-        try:
-            memory_usage = get_total_memory_usage(psProcess)
-            memory_mb = memory_usage / (1024 * 1024)
-            limit_mb = data['limiteMemoria'] / (1024 * 1024)
-            percent_used = (memory_usage / data['limiteMemoria']) * 100
-
-            status = f"[MEM] Uso: {memory_mb:.2f}MB / {limit_mb:.2f}MB ({percent_used:.1f}%)"
-            if percent_used >= 90:
-                status += " [ALERTA]"
-            print(status)
 
             if memory_usage >= data['limiteMemoria']:
-                print("[MEM] Limite de memória excedido. Encerrando processo.")
-                psProcess.kill()
+                print("[ALERTA] Limite de memória excedido. Encerrando processo.")
+                process.kill()
+                reason = "memoria_excedida"
                 break
+
+            if elapsedTime >= data['timeout']:
+                print("[ALERTA] Tempo limite excedido. Encerrando processo.")
+                process.kill()
+                reason = "tempo_excedido"
+                break
+
+            last_user_cpu = cpu_user
+            last_system_cpu = cpu_system
 
             time.sleep(1)
-        except psutil.NoSuchProcess:
-            print("[MEM] Processo terminou.")
-            break
 
-#chat chat
-def runBinary(data):
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            print("[INFO] Processo inacessível ou encerrado.")
+            process = None
+
+    return {
+        "cpu_user": last_user_cpu,
+        "cpu_system": last_system_cpu,
+        "memory_peak": max_memory,
+        "motivo_finalizacao": reason
+    }
+
+
+
+def run_binary(data):
     try:
-        caminho = data['binary']
-        nome_base = os.path.basename(caminho).lower()
+        cmd = f'cmd /c start "" "{data["binaryPath"]}"'
+        print(f"[INFO] Executando: {cmd}")
+        subprocess.Popen(cmd, shell=True)
 
-        # Se for caminho completo, verifica se existe
-        if os.path.sep in caminho and not os.path.exists(caminho):
-            print("[ERRO] Caminho não encontrado:", caminho)
-            return
+        time.sleep(3)
+        process = select_active_process(data['binaryName'])
 
-        # Se não for caminho completo, verifica se está no PATH
-        if os.path.sep not in caminho and not shutil.which(caminho):
-            print(f"[ERRO] '{caminho}' não encontrado no PATH do sistema.")
-            return
+        if not process:
+            print("[ERRO] Processo não encontrado após iniciar.")
+            return None
 
-        processos_antes = list(psutil.process_iter(['pid', 'name']))
-        processo_tmp = subprocess.Popen([caminho])
-        print(f'[INFO] Processo inicial (transitório) PID: {processo_tmp.pid}')
+        print(f"[INFO] Processo inicial detectado: PID={process.pid} ({process.name()})")
 
-        time.sleep(1.5)
+        monitorThread = threading.Thread(
+            target=monitor_process, args=(data, process.pid)
+        )
+        monitorThread.start()
+        monitorThread.join()
 
-        processos_depois = list(psutil.process_iter(['pid', 'name']))
-        novos = diferenca_processos(processos_antes, processos_depois)
+        return monitor_process(data, process.pid)
 
-        # Tenta identificar o processo pelo nome
-        processos_finais = [p for p in novos if nome_base in p.info['name'].lower()]
-
-        if not processos_finais:
-            print("[AVISO] Nenhum processo identificado diretamente. O programa pode estar rodando como processo UWP (ex: Calculadora).")
-            return
-
-        psProcess = processos_finais[0]
-        print(f"[INFO] Processo real detectado: PID {psProcess.pid} ({psProcess.name()})")
-
-        startTime = time.time()
-
-        cpu_thread = threading.Thread(target=monitorCPU, args=(data, psProcess))
-        mem_thread = threading.Thread(target=monitorMemory, args=(data, psProcess))
-        cpu_thread.start()
-        mem_thread.start()
-
-        while True:
-            tempoPassado = time.time() - startTime
-
-            if not psProcess.is_running():
-                print(f"[INFO] Processo finalizado após {tempoPassado:.2f}s")
-                break
-
-            if tempoPassado >= data['timeout']:
-                print(f"[INFO] Tempo limite atingido ({tempoPassado:.2f}s). Encerrando processo.")
-                psProcess.kill()
-                break
-
-            time.sleep(0.5)
-            
-        cpu_thread.join()
-        mem_thread.join()
-
-    except FileNotFoundError:
-        print("[ERRO] Arquivo não encontrado.")
     except Exception as e:
         print(f"[ERRO] Erro inesperado: {e}")
+        return None
+
+
+
+def main():
+    quota_excedida = False
+
+    while not quota_excedida:
+        data = askUserData()
+        if data is None:
+            print("Saindo...")
+            break
+
+        result = run_binary(data)
+
+        print("Execução concluída.")
+        print("===============================================")
+
+        if result:
+            print(" ♥  RELATÓRIO DE USO :DD ")
+            print(f"Tempo total de CPU (usuário): {result['cpu_user']:.2f}s")
+            print(f"Tempo total de CPU (sistema): {result['cpu_system']:.2f}s")
+            print(f"Tempo total de CPU (total): {result['cpu_user'] + result['cpu_system']:.2f}s")
+            print(f"Pico de uso de memória: {result['memory_peak'] / (1024 * 1024):.2f} MB")
+            print("==============================")
+
+            if result.get("motivo_finalizacao") == "quota_excedida":
+                print("[INFO] Quota de CPU foi excedida. Encerrando o programa completamente.")
+                quota_excedida = True
+        else:
+            print("não")
+
+        if not quota_excedida:
+            print("Digite 'sair' para encerrar.\n")
+
 
 if __name__ == "__main__":
-    while True:
-        data = askUserData()
-        if not data:
-            continue
-        runBinary(data)
+    main()
