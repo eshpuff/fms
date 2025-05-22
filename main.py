@@ -159,13 +159,42 @@ def run_binary(data):
 
 
 def main():
-    quota_excedida = False
+    print("Bem vindo ao FMS! 😎")
+    mode = input("Como gostaria de pagar? [1] Pré-Pago [2] Pós-Pago: ").strip()
 
-    while not quota_excedida:
+    prePago = mode =='1'
+    saldo = 0.0
+
+    if prePago:
+        try:
+            saldo = float(input("Qual o valor do saldo? ").replace(",", "."))
+            saldo = round(saldo, 2) #arredonda para 2 casas decimais
+        except ValueError:
+            print("Valor inválido.")
+            return
+        
+    tariffPerSecond = 0.01 #um centavo por segundo
+
+    while True:
+        print(f"\nSeu saldo atual: R${saldo:.2f}" if prePago else "\n[MODO PÓS-PAGO]")
         data = askUserData()
         if data is None:
             print("saindo...")
             break
+        quota_excedida = False
+
+        # while not quota_excedida:
+        #     data = askUserData()
+        #     if data is None:
+        #         print("saindo...")
+        #         break
+
+        if prePago:
+            maxCost = round(data['quotaCpu'] * tariffPerSecond, 2)
+            if saldo < maxCost:
+                print(f"[ERRO] Saldo insuficiente. Custo estimado: R${maxCost:.2f}")
+                print(f"Saldo atual: R${saldo:.2f}")
+                continue
 
         result = run_binary(data)
 
@@ -173,17 +202,31 @@ def main():
         print("===============================================")
 
         if result:
+            CPUTotaltime = result['cpu_user'] + result['cpu_system']
+            executionCost = round(CPUTotaltime * tariffPerSecond, 2)
+
             print("RELATÓRIO DE USO 😎 ")
             print(f"Tempo total de CPU (usuário): {result['cpu_user']:.2f}s")
             print(f"Tempo total de CPU (sistema): {result['cpu_system']:.2f}s")
             print(f"Tempo total de CPU (total): {result['cpu_user'] + result['cpu_system']:.2f}s")
             print(f"Pico de uso de memória: {result['memory_peak'] / (1024 * 1024):.2f} MB")
+
+            if prePago:
+                print(f"Valor total: R${executionCost:.2f}")
+                saldo = round(saldo - executionCost, 2)
+                print(f"Saldo restante: R${saldo:.2f}")
+                if saldo <= 0:
+                    print("Saldo insuficiente. encerrando o programa...")
+                    break
+            else:
+                print(f"\nCusto calculado (pós-pago): R${executionCost:.2f}")
+
             print("===============================================")
 
             if result.get("motivo_finalizacao") == "quota_excedida":
                 print("[INFO] Quota de CPU foi excedida. Encerrando o programa completamente.")
                 quota_excedida = True
-        else:
+        else:        
             print("ops cade o processo?")
 
         if not quota_excedida:
