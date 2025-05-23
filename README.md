@@ -19,4 +19,4 @@ pip install psutil
 
 ## 👩‍💻 Autoria
 
-Desenvolvido por **Bárbara Padilha** (164438) e **Éshiley Garim** (164431), como parte do Trabalho I da disciplina de **Sistemas Operacionais**.
+Desenvolvido por **Bárbara Padilha** e **Éshiley Garim**, como parte do Trabalho I da disciplina de **Sistemas Operacionais**.
